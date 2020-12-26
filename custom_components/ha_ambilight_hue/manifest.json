@@ -1,0 +1,8 @@
+{
+    "domain": "ha_ambilight_hue",
+    "name": "Ambilight Hue Sync for older Philips TVs",
+    "documentation": "https://github.com/CM000n/ha-ambilight-hue",
+    "dependencies": [],
+    "codeowners": ["@CM000n"],
+    "requirements": []
+  }
