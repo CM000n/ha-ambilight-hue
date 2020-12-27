@@ -1,3 +1,8 @@
+
+#####################################################
+# Import Packages                                   #
+#####################################################
+
 import json, string, requests
 from yeelight import *
 import time, random, urllib3
@@ -8,6 +13,10 @@ from homeassistant.const import (CONF_HOST, CONF_NAME, CONF_USERNAME, CONF_PASSW
 from requests.auth import HTTPDigestAuth
 from requests.adapters import HTTPAdapter
 
+#####################################################
+# Set default Variables                             #
+#####################################################
+
 DEFAULT_NAME = 'Ambilights+Hue'
 DEFAULT_DEVICE = 'default'
 DEFAULT_HOST = '127.0.0.1'
@@ -17,6 +26,10 @@ BASE_URL = 'http://{0}:1925/1/{1}'
 TIMEOUT = 5.0 # get/post request timeout with tv
 CONNFAILCOUNT = 5 # number of get/post attempts
 DEFAULT_RGB_COLOR = [255,137,14] # default colour for bulb when dimmed in game mode (and incase of failure)
+
+#####################################################
+# Define Platform Schema and Setup                  #
+#####################################################
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 	vol.Required(CONF_HOST, default=DEFAULT_HOST): cv.string,
@@ -31,6 +44,10 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
 	bulbip = config.get(CONF_ADDRESS)
 	option = config.get(CONF_DISPLAY_OPTIONS)
 	add_devices([AmbiHue(name, tvip, bulbip, user, password, option)])
+
+#####################################################
+# Define and initiate AmiHue Class                  #
+#####################################################
 
 class AmbiHue(SwitchEntity):
 
@@ -65,6 +82,9 @@ class AmbiHue(SwitchEntity):
     def should_poll(self):
         return True
 
+#####################################################
+# Define Bulb Turn On Function                      #
+#####################################################
 
     def turn_on(self, **kwargs):
         self.connect()
@@ -76,16 +96,28 @@ class AmbiHue(SwitchEntity):
         self._state = True
         self.follow_tv(self._position, 0.05) # 0.05ms is the 'sleep' time between refresh cycles
 
+#####################################################
+# Define Bulb Turn Off Function                     #
+#####################################################
+
     def turn_off(self, **kwargs):
         self._follow = False
         self.connect()
         self._bulb.stop_music() # disables (more intensive) music mode afterward
         self._state = False
 
+#####################################################
+# Define Bulb Turn Get State Function               #
+#####################################################
+
     def getState(self):
         powerstate = self._bulb.get_properties()['power']
         musicstate = self._bulb.get_properties()['music_on']
         return powerstate, musicstate
+
+#####################################################
+# Define Bulb Update Function                       #
+#####################################################
 
     def update(self):
         self.connect()
@@ -94,6 +126,10 @@ class AmbiHue(SwitchEntity):
             self._state = True
         else:
             self._state = False
+
+#####################################################
+# Define Bulb Connect Function                      #
+#####################################################
 
     def connect(self):
         try:
@@ -105,7 +141,45 @@ class AmbiHue(SwitchEntity):
         except:
             print("Failed to find bulb, trying again in 2s")
             time.sleep(2)
-    
+
+#####################################################
+# Define Get Request Function                       #
+#####################################################
+
+    def _getReq(self, path):
+        try:
+            if self._connfail:
+                self._connfail -= 1
+                return None
+            resp = self._session.get(BASE_URL.format(self._tvip, path), verify=False, auth=HTTPDigestAuth(self._user, self._password), timeout=TIMEOUT)
+            self.on = True
+            return json.loads(resp.text)
+        except requests.exceptions.RequestException as err:
+            self._connfail = CONNFAILCOUNT
+            self.on = False
+            return None
+
+#####################################################
+# Define Post Request Function                      #
+#####################################################
+
+    def _postReq(self, path, data):
+        try:
+            if self._connfail:
+                self._connfail -= 1
+                return False
+            resp = self._session.post(BASE_URL.format(self._tvip, path), data=json.dumps(data), verify=False, auth=HTTPDigestAuth(self._user, self._password), timeout=TIMEOUT)
+            self.on = True
+            return json.loads(resp.text)
+        except requests.exceptions.RequestException as err:
+            self._connfail = CONNFAILCOUNT
+            self.on = False
+            return False
+
+#####################################################
+# Define Follow TV Function                         #
+#####################################################
+
     def follow_tv(self, position, sleep): 
         while self._follow == True: # main loop for updating the bulb
             try:
@@ -317,29 +391,3 @@ class AmbiHue(SwitchEntity):
             except:
                 print('Failed to transfer color values')
                 self.turn_off()
-                
-    def _getReq(self, path):
-        try:
-            if self._connfail:
-                self._connfail -= 1
-                return None
-            resp = self._session.get(BASE_URL.format(self._tvip, path), verify=False, auth=HTTPDigestAuth(self._user, self._password), timeout=TIMEOUT)
-            self.on = True
-            return json.loads(resp.text)
-        except requests.exceptions.RequestException as err:
-            self._connfail = CONNFAILCOUNT
-            self.on = False
-            return None
-
-    def _postReq(self, path, data):
-        try:
-            if self._connfail:
-                self._connfail -= 1
-                return False
-            resp = self._session.post(BASE_URL.format(self._tvip, path), data=json.dumps(data), verify=False, auth=HTTPDigestAuth(self._user, self._password), timeout=TIMEOUT)
-            self.on = True
-            return json.loads(resp.text)
-        except requests.exceptions.RequestException as err:
-            self._connfail = CONNFAILCOUNT
-            self.on = False
-            return False
