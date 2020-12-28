@@ -1,74 +1,87 @@
 
 #####################################################
-# Import Packages                                   #
+# Import Packages and initialise Logger             #
 #####################################################
 
-import json, string, requests
+import logging, json, string, requests, time, random, urllib3
+
 from yeelight import *
-import time, random, urllib3
-import homeassistant.helpers.config_validation as cv
+
 import voluptuous as vol
-from homeassistant.components.switch import (DOMAIN, PLATFORM_SCHEMA, SwitchEntity, ENTITY_ID_FORMAT)
-from homeassistant.const import (CONF_HOST, CONF_NAME, CONF_USERNAME, CONF_PASSWORD, CONF_ADDRESS, CONF_DISPLAY_OPTIONS, STATE_OFF, STATE_STANDBY, STATE_ON)
+
 from requests.auth import HTTPDigestAuth
 from requests.adapters import HTTPAdapter
+
+import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.dispatcher import dispatcher_connect
+from homeassistant.helpers.event import track_state_change
+from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.components.switch import (DOMAIN, PLATFORM_SCHEMA, SwitchEntity, ENTITY_ID_FORMAT)
+from homeassistant.const import (ATTR_ENTITY_ID, CONF_HOST, CONF_NAME, CONF_PLATFORM, CONF_ENTITY_ID, CONF_USERNAME, CONF_PASSWORD, CONF_ADDRESS, CONF_DISPLAY_OPTIONS, STATE_ON, STATE_OFF, STATE_STANDBY, SERVICE_TURN_ON)
+from homeassistant.components.light import (is_on, ATTR_BRIGHTNESS, ATTR_COLOR_TEMP, ATTR_RGB_COLOR, ATTR_TRANSITION,VALID_TRANSITION, ATTR_WHITE_VALUE, ATTR_XY_COLOR, DOMAIN as LIGHT_DOMAIN)
+from homeassistant.util import slugify
+from homeassistant.util.color import (color_RGB_to_xy, color_temperature_kelvin_to_mired, color_temperature_to_rgb, color_xy_to_hs)
 
 #####################################################
 # Set default Variables                             #
 #####################################################
 
-DEFAULT_NAME = 'Ambilights+Hue'
-DEFAULT_DEVICE = 'default'
+ICON = 'mdi:television-ambient-light'
+
+DEFAULT_NAME = 'OldAmbilights+Hue'
+DEFAULT_RGB_COLOR = [255,137,14] # default colour for bulb when dimmed in game mode (and incase of failure)
 DEFAULT_HOST = '127.0.0.1'
-DEFAULT_BULB = '127.0.0.1'
+DEFAULT_ENTITY_ID = "entity_id"
 DEFAULT_DISPLAY_OPTIONS = 'top'
 BASE_URL = 'http://{0}:1925/1/{1}'
 TIMEOUT = 5.0 # get/post request timeout with tv
 CONNFAILCOUNT = 5 # number of get/post attempts
-DEFAULT_RGB_COLOR = [255,137,14] # default colour for bulb when dimmed in game mode (and incase of failure)
 
 #####################################################
 # Define Platform Schema and Setup                  #
 #####################################################
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
+	vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
 	vol.Required(CONF_HOST, default=DEFAULT_HOST): cv.string,
-	vol.Required(CONF_ADDRESS, default=DEFAULT_BULB): cv.string,
-	vol.Optional(CONF_DISPLAY_OPTIONS, default=DEFAULT_DISPLAY_OPTIONS): cv.string,
-	vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string
+	vol.Required(CONF_ENTITY_ID, default=DEFAULT_ENTITY_ID): cv.entity_id,
+	vol.Optional(CONF_DISPLAY_OPTIONS, default=DEFAULT_DISPLAY_OPTIONS): cv.string
 })
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
 	name = config.get(CONF_NAME)
 	tvip = config.get(CONF_HOST)
-	bulbip = config.get(CONF_ADDRESS)
-	option = config.get(CONF_DISPLAY_OPTIONS)
-	add_devices([AmbiHue(name, tvip, bulbip, user, password, option)])
+	bulb = config.get(CONF_ENTITY_ID)
+	position = config.get(CONF_DISPLAY_OPTIONS)
+	add_devices([OldAmbiHue(name, tvip, bulb, position)])
 
 #####################################################
 # Define and initiate AmiHue Class                  #
 #####################################################
 
-class AmbiHue(SwitchEntity):
+class OldAmbiHue(SwitchEntity):
 
-    def __init__(self, name, tvip, bulbip, user, password, option):
+    def __init__(self, name, tvip, bulbip, position):
         self._name = name
-        self._bulbip = bulbip
         self._tvip = tvip
-        self._user = user
-        self._password = password
-        self._position = option
+        self._bulb = bulb
+        self._position = position
         self._state = False
         self._powerstate = False
         self._connfail = 0
         self._available = False
         self._session = requests.Session()
         self._session.mount('https://', HTTPAdapter(pool_connections=1))
-        self._bulb = Bulb(bulbip)
 
     @property
     def name(self):
+        """Name to use in the frontend, if any."""
         return self._name
+
+    @property
+    def icon(self):
+        """Icon to use in the frontend, if any."""
+        return self._icon
 
     @property
     def is_on(self):
@@ -81,6 +94,42 @@ class AmbiHue(SwitchEntity):
     @property
     def should_poll(self):
         return True
+
+#####################################################
+# Define Bulb Connect Function                      #
+#####################################################
+
+    def connect(self):
+        try:
+            properties = self._bulb.get_properties()
+            if properties:
+                self._available = True
+            else:
+                self._available = False
+        except:
+            print("Failed to find bulb, trying again in 2s")
+            time.sleep(2)
+
+#####################################################
+# Define Bulb Turn Get State Function               #
+#####################################################
+
+    def getState(self):
+        powerstate = self._bulb.get_properties()['power']
+        musicstate = self._bulb.get_properties()['music_on']
+        return powerstate, musicstate
+
+#####################################################
+# Define Bulb Update Function                       #
+#####################################################
+
+    def update(self):
+        self.connect()
+        self._powerstate, musicstate = self.getState()
+        if int(musicstate) == 1:
+            self._state = True
+        else:
+            self._state = False
 
 #####################################################
 # Define Bulb Turn On Function                      #
@@ -105,42 +154,6 @@ class AmbiHue(SwitchEntity):
         self.connect()
         self._bulb.stop_music() # disables (more intensive) music mode afterward
         self._state = False
-
-#####################################################
-# Define Bulb Turn Get State Function               #
-#####################################################
-
-    def getState(self):
-        powerstate = self._bulb.get_properties()['power']
-        musicstate = self._bulb.get_properties()['music_on']
-        return powerstate, musicstate
-
-#####################################################
-# Define Bulb Update Function                       #
-#####################################################
-
-    def update(self):
-        self.connect()
-        self._powerstate, musicstate = self.getState()
-        if int(musicstate) == 1:
-            self._state = True
-        else:
-            self._state = False
-
-#####################################################
-# Define Bulb Connect Function                      #
-#####################################################
-
-    def connect(self):
-        try:
-            properties = self._bulb.get_properties()
-            if properties:
-                self._available = True
-            else:
-                self._available = False
-        except:
-            print("Failed to find bulb, trying again in 2s")
-            time.sleep(2)
 
 #####################################################
 # Define Get Request Function                       #
@@ -370,24 +383,25 @@ class AmbiHue(SwitchEntity):
                     g = int(pixels[pixel]['g'])
                     b = int(pixels[pixel]['b'])
 
-                if r == None and g == None and b == None: # incase of a failure somewhere
-                    r,g,b = DEFAULT_RGB_COLOR[0], DEFAULT_RGB_COLOR[1], DEFAULT_RGB_COLOR[2]
-                    self._bulb.set_brightness(0)
-                if r == 0 and g == 0 and b == 0: # dim bulb in game mode
-                    if ambiSetting['menuSetting'] == "GAME":
-                        r,g,b = DEFAULT_RGB_COLOR[0], DEFAULT_RGB_COLOR[1], DEFAULT_RGB_COLOR[2]
-                        self._bulb.set_brightness(0)
-                else:
-                    if ambiSetting['styleName'] == "FOLLOW_VIDEO":
-                        transitions = [RGBTransition(r,g,b,duration=400)] # this transition can be customised (see: https://yeelight.readthedocs.io/en/latest/yeelight.html#yeelight.Flow)
-                    else:
-                        transitions = [RGBTransition(r,g,b,duration=200)]
-                    flow = Flow(
-                        count=1,
-                        action=Flow.actions.stay,
-                        transitions=transitions)
-                    self._bulb.start_flow(flow)
-                time.sleep(sleep)
+                print(r, g, b)
+#                if r == None and g == None and b == None: # incase of a failure somewhere
+#                    r,g,b = DEFAULT_RGB_COLOR[0], DEFAULT_RGB_COLOR[1], DEFAULT_RGB_COLOR[2]
+#                    self._bulb.set_brightness(0)
+#                if r == 0 and g == 0 and b == 0: # dim bulb in game mode
+#                    if ambiSetting['menuSetting'] == "GAME":
+#                        r,g,b = DEFAULT_RGB_COLOR[0], DEFAULT_RGB_COLOR[1], DEFAULT_RGB_COLOR[2]
+#                        self._bulb.set_brightness(0)
+#                else:
+#                    if ambiSetting['styleName'] == "FOLLOW_VIDEO":
+#                        transitions = [RGBTransition(r,g,b,duration=400)] # this transition can be customised (see: https://yeelight.readthedocs.io/en/latest/yeelight.html#yeelight.Flow)
+#                    else:
+#                        transitions = [RGBTransition(r,g,b,duration=200)]
+#                    flow = Flow(
+#                        count=1,
+#                        action=Flow.actions.stay,
+#                        transitions=transitions)
+#                    self._bulb.start_flow(flow)
+#                time.sleep(sleep)
             except:
                 print('Failed to transfer color values')
                 self.turn_off()
