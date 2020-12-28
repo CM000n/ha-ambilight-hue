@@ -63,6 +63,7 @@ class OldAmbiHue(SwitchEntity):
 
     def __init__(self, name, tvip, bulb, position):
         self._name = name
+        self._icon = ICON
         self._tvip = tvip
         self._bulb = bulb
         self._position = position
