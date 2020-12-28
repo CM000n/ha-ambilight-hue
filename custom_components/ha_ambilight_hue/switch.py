@@ -17,7 +17,7 @@ from homeassistant.helpers.dispatcher import dispatcher_connect
 from homeassistant.helpers.event import track_state_change
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.components.switch import (DOMAIN, PLATFORM_SCHEMA, SwitchEntity, ENTITY_ID_FORMAT)
-from homeassistant.const import (ATTR_ENTITY_ID, CONF_HOST, CONF_NAME, CONF_PLATFORM, CONF_ENTITY_ID, CONF_USERNAME, CONF_PASSWORD, CONF_ADDRESS, CONF_DISPLAY_OPTIONS, STATE_ON, STATE_OFF, STATE_STANDBY, SERVICE_TURN_ON)
+from homeassistant.const import (ATTR_ENTITY_ID, CONF_HOST, CONF_NAME, CONF_PLATFORM, CONF_ENTITY_ID, CONF_USERNAME, CONF_PASSWORD, CONF_DISPLAY_OPTIONS, STATE_ON, STATE_OFF, STATE_STANDBY, SERVICE_TURN_ON)
 from homeassistant.components.light import (is_on, ATTR_BRIGHTNESS, ATTR_COLOR_TEMP, ATTR_RGB_COLOR, ATTR_TRANSITION,VALID_TRANSITION, ATTR_WHITE_VALUE, ATTR_XY_COLOR, DOMAIN as LIGHT_DOMAIN)
 from homeassistant.util import slugify
 from homeassistant.util.color import (color_RGB_to_xy, color_temperature_kelvin_to_mired, color_temperature_to_rgb, color_xy_to_hs)
@@ -61,7 +61,7 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
 
 class OldAmbiHue(SwitchEntity):
 
-    def __init__(self, name, tvip, bulbip, position):
+    def __init__(self, name, tvip, bulb, position):
         self._name = name
         self._tvip = tvip
         self._bulb = bulb
