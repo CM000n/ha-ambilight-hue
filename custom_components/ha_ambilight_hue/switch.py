@@ -5,8 +5,6 @@
 
 import logging, json, string, requests, time, random, urllib3
 
-from yeelight import *
-
 import voluptuous as vol
 
 from requests.auth import HTTPDigestAuth
@@ -17,10 +15,9 @@ from homeassistant.helpers.dispatcher import dispatcher_connect
 from homeassistant.helpers.event import track_state_change
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.components.switch import (DOMAIN, PLATFORM_SCHEMA, SwitchEntity, ENTITY_ID_FORMAT)
-from homeassistant.const import (ATTR_ENTITY_ID, CONF_HOST, CONF_NAME, CONF_PLATFORM, CONF_ENTITY_ID, CONF_USERNAME, CONF_PASSWORD, CONF_DISPLAY_OPTIONS, STATE_ON, STATE_OFF, STATE_STANDBY, SERVICE_TURN_ON)
+from homeassistant.const import (ATTR_ENTITY_ID, CONF_HOST, CONF_NAME, CONF_PLATFORM, CONF_ENTITY_ID, CONF_USERNAME, CONF_PASSWORD, CONF_ADDRESS, CONF_DISPLAY_OPTIONS, STATE_ON, STATE_OFF, STATE_STANDBY, SERVICE_TURN_ON)
 from homeassistant.components.light import (is_on, ATTR_BRIGHTNESS, ATTR_COLOR_TEMP, ATTR_RGB_COLOR, ATTR_TRANSITION,VALID_TRANSITION, ATTR_WHITE_VALUE, ATTR_XY_COLOR, DOMAIN as LIGHT_DOMAIN)
 from homeassistant.util import slugify
-from homeassistant.util.color import (color_RGB_to_xy, color_temperature_kelvin_to_mired, color_temperature_to_rgb, color_xy_to_hs)
 
 #####################################################
 # Set default Variables                             #
@@ -32,9 +29,9 @@ DEFAULT_NAME = 'OldAmbilights+Hue'
 DEFAULT_RGB_COLOR = [255,137,14] # default colour for bulb when dimmed in game mode (and incase of failure)
 DEFAULT_HOST = '127.0.0.1'
 DEFAULT_ENTITY_ID = "entity_id"
-DEFAULT_DISPLAY_OPTIONS = 'top'
+DEFAULT_DISPLAY_OPTIONS = 'right'
 BASE_URL = 'http://{0}:1925/1/{1}'
-TIMEOUT = 5.0 # get/post request timeout with tv
+TIMEOUT = 60.0 # get/post request timeout with tv
 CONNFAILCOUNT = 5 # number of get/post attempts
 
 #####################################################
@@ -45,7 +42,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 	vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
 	vol.Required(CONF_HOST, default=DEFAULT_HOST): cv.string,
 	vol.Required(CONF_ENTITY_ID, default=DEFAULT_ENTITY_ID): cv.entity_id,
-	vol.Optional(CONF_DISPLAY_OPTIONS, default=DEFAULT_DISPLAY_OPTIONS): cv.string
+	vol.Required(CONF_DISPLAY_OPTIONS, default=DEFAULT_DISPLAY_OPTIONS): cv.string
 })
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
@@ -68,11 +65,15 @@ class OldAmbiHue(SwitchEntity):
         self._bulb = bulb
         self._position = position
         self._state = False
-        self._powerstate = False
         self._connfail = 0
-        self._available = False
+        self._attributes = {}
+        self._attributes['position'] = position
+        self._attributes['r'] = None
+        self._attributes['g'] = None
+        self._attributes['b'] = None
+        self._attributes['tvip'] = tvip
         self._session = requests.Session()
-        self._session.mount('https://', HTTPAdapter(pool_connections=1))
+        self._session.mount('http://', HTTPAdapter(pool_connections=1))
 
     @property
     def name(self):
@@ -86,109 +87,51 @@ class OldAmbiHue(SwitchEntity):
 
     @property
     def is_on(self):
+        """Return true if switch is on."""
         return self._state
 
+    async def async_added_to_hass(self):
+        """Call when entity about to be added to hass."""
+        # If not None, we got an initial value.
+        await super().async_added_to_hass()
+        if self._state is not None:
+            return
+
+        state = await self.async_get_last_state()
+        self._state = state and state.state == STATE_ON
+
     @property
-    def available(self):
-        return self._available
+    def device_state_attributes(self):
+        """Return the state attributes of the monitored values."""
+        return self._attributes
 
     @property
     def should_poll(self):
-        return True
-
-#####################################################
-# Define Bulb Connect Function                      #
-#####################################################
-
-    def connect(self):
-        try:
-            properties = self._bulb.get_properties()
-            if properties:
-                self._available = True
-            else:
-                self._available = False
-        except:
-            print("Failed to find bulb, trying again in 2s")
-            time.sleep(2)
-
-#####################################################
-# Define Bulb Turn Get State Function               #
-#####################################################
-
-    def getState(self):
-        powerstate = self._bulb.get_properties()['power']
-        musicstate = self._bulb.get_properties()['music_on']
-        return powerstate, musicstate
-
-#####################################################
-# Define Bulb Update Function                       #
-#####################################################
-
-    def update(self):
-        self.connect()
-        self._powerstate, musicstate = self.getState()
-        if int(musicstate) == 1:
-            self._state = True
-        else:
-            self._state = False
+        return False
 
 #####################################################
 # Define Bulb Turn On Function                      #
 #####################################################
 
     def turn_on(self, **kwargs):
-        self.connect()
-        self.update()
-        if self._powerstate == 'off':
-            self._bulb.turn_on()
-        self._bulb.start_music() # for updates to be quick enough for this to work, the 'music mode' must be enabled (see Yeelight API)
-        self._follow = True
+        """Turn on the switch."""
         self._state = True
+        self._follow = True
         self.follow_tv(self._position, 0.05) # 0.05ms is the 'sleep' time between refresh cycles
+        self.async_schedule_update_ha_state()
 
 #####################################################
 # Define Bulb Turn Off Function                     #
 #####################################################
 
     def turn_off(self, **kwargs):
-        self._follow = False
-        self.connect()
-        self._bulb.stop_music() # disables (more intensive) music mode afterward
+        """Turn off the switch."""
         self._state = False
-
-#####################################################
-# Define Get Request Function                       #
-#####################################################
-
-    def _getReq(self, path):
-        try:
-            if self._connfail:
-                self._connfail -= 1
-                return None
-            resp = self._session.get(BASE_URL.format(self._tvip, path), verify=False, auth=HTTPDigestAuth(self._user, self._password), timeout=TIMEOUT)
-            self.on = True
-            return json.loads(resp.text)
-        except requests.exceptions.RequestException as err:
-            self._connfail = CONNFAILCOUNT
-            self.on = False
-            return None
-
-#####################################################
-# Define Post Request Function                      #
-#####################################################
-
-    def _postReq(self, path, data):
-        try:
-            if self._connfail:
-                self._connfail -= 1
-                return False
-            resp = self._session.post(BASE_URL.format(self._tvip, path), data=json.dumps(data), verify=False, auth=HTTPDigestAuth(self._user, self._password), timeout=TIMEOUT)
-            self.on = True
-            return json.loads(resp.text)
-        except requests.exceptions.RequestException as err:
-            self._connfail = CONNFAILCOUNT
-            self.on = False
-            return False
+        self._follow = False
+        self._attributes['r'] = None
+        self._attributes['g'] = None
+        self._attributes['b'] = None
+        self.async_schedule_update_ha_state()
 
 #####################################################
 # Define Follow TV Function                         #
@@ -197,212 +140,27 @@ class OldAmbiHue(SwitchEntity):
     def follow_tv(self, position, sleep): 
         while self._follow == True: # main loop for updating the bulb
             try:
-                ambiSetting = self._getReq('ambilight/currentconfiguration') # determines the effect/follow style of the ambilights
-                if ambiSetting['styleName'] == "FOLLOW_VIDEO":
-                    currentstate = self._getReq('ambilight/measured') # uses pre-processing r,g,b values from tv (see: http://jointspace.sourceforge.net/projectdata/documentation/jasonApi/1/doc/API-ambilight.html)
-                else:
-                    currentstate = self._getReq('ambilight/processed') # uses post-processing r,g,b values from tv (allows yeelight bulb to follow tv's algorithms such as the follow audio effects and colours set by home assistant)
-                layer1 = currentstate['layer1']
-                
-                # below calulates different average r,g,b values to send to the lamp
-                # see: http://jointspace.sourceforge.net/projectdata/documentation/jasonApi/1/doc/API-Method-ambilight-measured-GET.html
-                # etc in http://jointspace.sourceforge.net/projectdata/documentation/jasonApi/1/doc/API.html
-                
-                
-                if position == 'top-middle-average': # 'display_options' value given in home assistant 
-                    pixels = layer1['top'] # for tv topology see http://jointspace.sourceforge.net/projectdata/documentation/jasonApi/1/doc/API-Method-ambilight-topology-GET.html
-                    pixel3 = str((int(len(pixels)/2)-1)) # selects pixels
-                    pixel4 = str(int(len(pixels)/2))
-                    r = int( ((pixels[pixel3]['r'])**2+(pixels[pixel4]['r'])**2) ** (1/2) ) # function to calulcate desired values
-                    g = int( ((pixels[pixel3]['g'])**2+(pixels[pixel4]['g'])**2) ** (1/2) )
-                    b = int( ((pixels[pixel3]['b'])**2+(pixels[pixel4]['b'])**2) ** (1/2) )
-                    # r,g and b used later in the bulb transition/flow
-                
-                elif position == 'top-average':
-                    pixels = layer1['top']
-                    r_sum, g_sum, b_sum = 0,0,0
-                    for pixel in pixels:
-                        r_sum = r_sum + ((pixel['r']) ** 2)
-                        g_sum = g_sum + ((pixel['g']) ** 2)
-                        b_sum = b_sum + ((pixel['b']) ** 2)
-                    r = int((r_sum/len(pixels))*(1/2))
-                    g = int((g_sum/len(pixels))*(1/2))
-                    b = int((b_sum/len(pixels))*(1/2))
-                elif position == 'right-average':
-                    pixels = layer1['right']
-                    r_sum, g_sum, b_sum = 0,0,0
-                    for i in range(0,len(pixels)):
-                        pixel = str(int(i))
-                        r_sum = r_sum + ((pixels[pixel]['r']) ** 2)
-                        g_sum = g_sum + ((pixels[pixel]['g']) ** 2)
-                        b_sum = b_sum + ((pixels[pixel]['b']) ** 2)
-                    r = int((r_sum/len(pixels))**(1/2))
-                    g = int((g_sum/len(pixels))**(1/2))
-                    b = int((b_sum/len(pixels))**(1/2))
-                elif position == 'left-average':
-                    pixels = layer1['left']
-                    r_sum, g_sum, b_sum = 0,0,0
-                    for pixel in pixels:
-                        r_sum = r_sum + ((pixel['r']) ** 2)
-                        g_sum = g_sum + ((pixel['g']) ** 2)
-                        b_sum = b_sum + ((pixel['b']) ** 2)
-                    r = int((r_sum/len(pixels))*(1/2))
-                    g = int((g_sum/len(pixels))*(1/2))
-                    b = int((b_sum/len(pixels))*(1/2))
-                elif position == 'bottom-average':
-                    pixels = layer1['bottom']
-                    r_sum, g_sum, b_sum = 0,0,0
-                    for pixel in pixels:
-                        r_sum = r_sum + ((pixel['r']) ** 2)
-                        g_sum = g_sum + ((pixel['g']) ** 2)
-                        b_sum = b_sum + ((pixel['b']) ** 2)
-                    r = int((r_sum/len(pixels))*(1/2))
-                    g = int((g_sum/len(pixels))*(1/2))
-                    b = int((b_sum/len(pixels))*(1/2))
-                elif position == 'top-middle' or position == 'top-center' or position == 'top':
-                    pixels = layer1['top']
-                    pixel = str(int(len(pixels)/2))
-                    r = int(pixels[pixel]['r'])
-                    g = int(pixels[pixel]['g'])
-                    b = int(pixels[pixel]['b'])
-                elif position == 'bottom-middle' or position == 'bottom-center' or position == 'bottom':
-                    pixels = layer1['bottom']
-                    pixel = str(int(len(pixels)/2))
-                    r = int(pixels[pixel]['r'])
-                    g = int(pixels[pixel]['g'])
-                    b = int(pixels[pixel]['b'])
-                elif position == 'right':
-                    pixels = layer1['right']
-                    pixel = str(int(len(pixels)/2))
-                    r = int(pixels[pixel]['r'])
-                    g = int(pixels[pixel]['g'])
-                    b = int(pixels[pixel]['b'])
-                elif position == 'left':
-                    pixels = layer1['left']
-                    pixel = str(int(len(pixels)/2))
-                    r = int(pixels[pixel]['r'])
-                    g = int(pixels[pixel]['g'])
-                    b = int(pixels[pixel]['b'])
-                elif position == 'top-right-average':
-                    r_sum, g_sum, b_sum = 0,0,0
-                    rightpixels = layer1['right']
-                    rtpixel = rightpixels['0']
-                    toppixels = layer1['top']
-                    trpixel = toppixels[str(int(len(toppixels)-1))]
-                    selected_pixels = [rtpixel,trpixel]
-                    for pixel in selected_pixels:
-                        r_sum = r_sum + ((pixel['r']) ** 2)
-                        g_sum = g_sum + ((pixel['g']) ** 2)
-                        b_sum = b_sum + ((pixel['b']) ** 2)
-                    r = int((r_sum/len(selected_pixels))*(1/2))
-                    g = int((g_sum/len(selected_pixels))*(1/2))
-                    b = int((b_sum/len(selected_pixels))*(1/2))
-                elif position == 'top-left-average':
-                    r_sum, g_sum, b_sum = 0,0,0
-                    leftpixels = layer1['left']
-                    ltpixel = leftpixels[str(int(len(leftpixels)-1))]
-                    toppixels = layer1['top']
-                    tlpixel = toppixels['0']
-                    selected_pixels = [ltpixel,tlpixel]
-                    for pixel in selected_pixels:
-                        r_sum = r_sum + ((pixel['r']) ** 2)
-                        g_sum = g_sum + ((pixel['g']) ** 2)
-                        b_sum = b_sum + ((pixel['b']) ** 2)
-                    r = int((r_sum/len(selected_pixels))*(1/2))
-                    g = int((g_sum/len(selected_pixels))*(1/2))
-                    b = int((b_sum/len(selected_pixels))*(1/2))
-                elif position == 'bottom-right-average':
-                    r_sum, g_sum, b_sum = 0,0,0
-                    rightpixels = layer1['right']
-                    rbpixel = rightpixels[str(int(len(rightpixels)-1))]
-                    bottompixels = layer1['bottom']
-                    rbpixel = bottompixels[str(int(len(bottompixels)-1))]
-                    selected_pixels = [rbpixel,brpixel]
-                    for pixel in selected_pixels:
-                        r_sum = r_sum + ((pixel['r']) ** 2)
-                        g_sum = g_sum + ((pixel['g']) ** 2)
-                        b_sum = b_sum + ((pixel['b']) ** 2)
-                    r = int((r_sum/len(selected_pixels))*(1/2))
-                    g = int((g_sum/len(selected_pixels))*(1/2))
-                    b = int((b_sum/len(selected_pixels))*(1/2))
-                elif position == 'bottom-left-average':
-                    r_sum, g_sum, b_sum = 0,0,0
-                    leftixels = layer1['left']
-                    lbpixel = leftixels['0']
-                    bottompixels = layer1['bottom']
-                    blpixel = bottomixels['0']
-                    selected_pixels = [lbpixel,blpixel]
-                    for pixel in selected_pixels:
-                        r_sum = r_sum + ((pixel['r']) ** 2)
-                        g_sum = g_sum + ((pixel['g']) ** 2)
-                        b_sum = b_sum + ((pixel['b']) ** 2)
-                    r = int((r_sum/len(selected_pixels))*(1/2))
-                    g = int((g_sum/len(selected_pixels))*(1/2))
-                    b = int((b_sum/len(selected_pixels))*(1/2))
-                elif position == 'right-top':
-                    pixels = layer1['right']
-                    r = int(pixels['0']['r'])
-                    g = int(pixels['0']['g'])
-                    b = int(pixels['0']['b'])
-                elif position == 'left-top':
-                    pixels = layer1['left']
-                    pixel = str(int(len(pixels)-1))
-                    r = int(pixels[pixel]['r'])
-                    g = int(pixels[pixel]['g'])
-                    b = int(pixels[pixel]['b'])
-                elif position == 'top-left':
-                    pixels = layer1['top']
-                    r = int(pixels['0']['r'])
-                    g = int(pixels['0']['g'])
-                    b = int(pixels['0']['b'])
-                elif position == 'top-right':
-                    pixels = layer1['top']
-                    pixel = str(int(len(pixels)-1))
-                    r = int(pixels[pixel]['r'])
-                    g = int(pixels[pixel]['g'])
-                    b = int(pixels[pixel]['b'])
-                elif position == 'right-bottom':
-                    pixels = layer1['right']
-                    pixel = str(int(len(pixels)-1))
-                    r = int(pixels[pixel]['r'])
-                    g = int(pixels[pixel]['g'])
-                    b = int(pixels[pixel]['b'])
-                elif position == 'left-bottom':
-                    pixels = layer1['left']
-                    r = int(pixels['0']['r'])
-                    g = int(pixels['0']['g'])
-                    b = int(pixels['0']['b'])
-                elif position == 'bottom-left':
-                    pixels = layer1['bottom']
-                    r = int(pixels['0']['r'])
-                    g = int(pixels['0']['g'])
-                    b = int(pixels['0']['b'])
-                elif position == 'bottom-right':
-                    pixels = layer1['bottom']
-                    pixel = str(int(len(pixels)-1))
-                    r = int(pixels[pixel]['r'])
-                    g = int(pixels[pixel]['g'])
-                    b = int(pixels[pixel]['b'])
+                ambivalues = self._session.get(BASE_URL.format(self._tvip, 'ambilight/processed'), verify=False, timeout=TIMEOUT)
+                ambivalues = json.loads(ambivalues.text)
+                layer1 = ambivalues['layer1']
 
-                print(r, g, b)
-#                if r == None and g == None and b == None: # incase of a failure somewhere
-#                    r,g,b = DEFAULT_RGB_COLOR[0], DEFAULT_RGB_COLOR[1], DEFAULT_RGB_COLOR[2]
-#                    self._bulb.set_brightness(0)
-#                if r == 0 and g == 0 and b == 0: # dim bulb in game mode
-#                    if ambiSetting['menuSetting'] == "GAME":
-#                        r,g,b = DEFAULT_RGB_COLOR[0], DEFAULT_RGB_COLOR[1], DEFAULT_RGB_COLOR[2]
-#                        self._bulb.set_brightness(0)
-#                else:
-#                    if ambiSetting['styleName'] == "FOLLOW_VIDEO":
-#                        transitions = [RGBTransition(r,g,b,duration=400)] # this transition can be customised (see: https://yeelight.readthedocs.io/en/latest/yeelight.html#yeelight.Flow)
-#                    else:
-#                        transitions = [RGBTransition(r,g,b,duration=200)]
-#                    flow = Flow(
-#                        count=1,
-#                        action=Flow.actions.stay,
-#                        transitions=transitions)
-#                    self._bulb.start_flow(flow)
-#                time.sleep(sleep)
+                pixels = layer1['right']
+                pixel = str(int(len(pixels)/2))
+                r = int(pixels[pixel]['r'])
+                g = int(pixels[pixel]['g'])
+                b = int(pixels[pixel]['b'])
+
+                print("Got the Ambilight RGB values from this URL:", BASE_URL.format(self._tvip, 'ambilight/processed'))
+                print("Ambilight red:", r)
+                print("Ambilight green:", g)
+                print("Ambilight blue:", b)
+                self._attributes['r'] = r
+                self._attributes['g'] = g
+                self._attributes['b'] = b
+                self.async_schedule_update_ha_state()
+
+                time.sleep(sleep)
             except:
-                print('Failed to transfer color values')
-                self.turn_off()
+                print("Getting Ambilight RGB Values Failed")
+                time.sleep(sleep)
+
