@@ -54,9 +54,9 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
 	position = config.get(CONF_DISPLAY_OPTIONS)
 	add_devices([OldAmbiHue(name, tvip, bulb, position)])
 
-#####################################################
-# Define and initiate AmiHue Class                  #
-#####################################################
+########################################################
+# Define and initiate OldAmbiHue Class with properties #
+########################################################
 
 class OldAmbiHue(SwitchEntity):
 
