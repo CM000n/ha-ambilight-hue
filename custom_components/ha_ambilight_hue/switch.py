@@ -328,8 +328,8 @@ class OldAmbiHue(SwitchEntity):
                 else:
                     service_data = {ATTR_ENTITY_ID: self._bulb}
                     service_data[ATTR_RGB_COLOR] = tuple(map(int, (r,g,b)))
-                    service_data[ATTR_BRIGHTNESS] = 50
-                    service_data[ATTR_TRANSITION] = 5
+                    service_data[ATTR_BRIGHTNESS] = 128
+                    service_data[ATTR_TRANSITION] = 1
                     self.hass.services.call(LIGHT_DOMAIN, SERVICE_TURN_ON, service_data)
                     _LOGGER.debug(self._bulb + self._name + " RGB Adjusted - rgb_color: " + str(rgb) + ", brightness: " + str(brightness) + ", transition: " + str(transition))
 
